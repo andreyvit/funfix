@@ -1,14 +1,15 @@
-Fun Fixtures for Python
-=======================
+Funfix: Fixtures for Python
+===========================
 
-Your fixtures, as simple as they can get. Enjoy!
+Funfix complements the story of your tests with clear & concise fixtures that are fun to write. Currently works with Google App Engine's Datastore, looking for contributors to support other ORMs.
 
 
 Really Basic Usage
 ------------------
 
-Say you have the following model:
+Say you have the following models:
 
+    # mymodels.py
     class Post(db.Model):
       title = db.TextProperty()
       body  = db.TextProperty()
@@ -34,29 +35,27 @@ Defining a simple fixture is as simple as:
         title = "Long time no see..."
         body  = "Sorry, I've been away for a while: too much work. But now I'll definitely blog more!"
       
-As these are regular classes, you can reference the values anywhere:
+Usage #1: You can simply reference the values of the fixtures anywhere:
 
     def can_reference_values_anywhere():
       print Posts.initial.body
-      assert not isinstance(Posts.initial, Post)  # Posts.initial is not a Post!
+      assert not isinstance(Posts.initial, Post)  # Posts.initial is a regular Python class
     
-To store a fixture into your database, apply the fixture as a decorator:
+Usage #2: To actually load the fixtures into the datastore, use the fixture class as a decorator:
 
     @Posts
     def runs_with_fixtures_in_the_db():
-      assert isinstance(Posts.initial, Post)
+      assert isinstance(Posts.initial, Post)  # look, ma, Posts.initial is now a model instance!
       print Posts.initial.body
-      print Posts.initial.key()  # since it's in the DB, can get id/key/whatever now
+      print Posts.initial.key()  # since it's in the DB, can get id/key now
     
-Note how `Posts.initial` is now an instance of your model class, saved into the database!
-
-After the decorated method returns, the fixtures are removed from the database, and `Posts.initial` becomes a boring non-model class again.
+After the decorated method returns, the fixtures are removed from the database, and `Posts.initial` becomes a boring regular Python class again.
 
 
 Referencing Other Objects
 -------------------------
 
-Time to add some comment fixtures!
+Time to add some comments!
   
     class Comments(Fixture, Comment):
   
@@ -77,31 +76,43 @@ Again, loading them is easy:
       print Comments.hey.post.author
       print Posts.initial
       
-Note that all referenced fixtures are loaded too, so loading Comments automatically loads `Posts.initial` (but not `Posts.sorry`, since `Posts.sorry` has not been referenced).
+Note that all referenced fixtures are loaded too, so loading Comments automatically loads `Posts.initial` (but not `Posts.sorry`, since `Posts.sorry` is not referenced).
 
-Need a fancier dependency? Use a lambda expression:
+Need a fancier dependency? Use a lambda expression (or a function):
 
     class MoreComments(Fixture, Comment):
       class fancy:
-        key_name = lambda: 'Comment-for-%s' % Posts.initial.key().name()
+        key_name = lambda: 'Comment-for-%s' % Posts.initial.key().id_or_name()
         post     = Posts.initial
         author   = "Kate"
         body     = "Where's Aeron?"
+        
+Need to get even fancier? Accept a 'self' argument:
 
-Note that simply referencing `Posts.initial.key()` won't work outside of a decorated method, because the fixture is not loaded yet and thus `Posts.initial` is not a model object yet:
+    class EvenMoreComments(Fixture, Comment):
+      class fancy:
+        post     = Posts.initial
+        author   = "Kate"
+        body     = lambda self: "Where's Aeron? -- %s." % self.author
+        
+        def key_name(self):
+          # e.g. "fancy-comment-from-Kate-for-1"
+          return '%s-comment-from-%s-for-%s' % (self.__name__, self.author, Posts.initial.key().id_or_name())
+
+Note: simply referencing `Posts.initial.key()` will NOT work outside of a decorated method, because the fixture is not loaded yet and thus `Posts.initial` is not a model object yet:
 
     # BAD BAD BAD
     class MoreComments(Fixture, Comment):
       class fancy:
-        # AttributeError: Posts.initial does not have a `key` attribute
+        # AttributeError: Posts.initial does not have a `key` attribute yet
         key_name = 'Comment-for-%s' % Posts.initial.key().name()
         post     = Posts.initial
         author   = "Kate"
         body     = "Where's Aeron?"
         
 
-Using Derivation
-----------------
+Derivation
+----------
 
 You can derive fixture classes from each other, and you can derive individual fixtures from each other. This works just as you can expect:
 
@@ -145,6 +156,52 @@ If you think that deriving from a model class is ugly, you can also specify it u
       class initial:
         title = "Starting a blog"
         body  = "Hey, I'm blogging now!"
+        
+        
+Google App Engine Key Name Generation
+-------------------------------------
+
+Goole App Engine backend in funfix simply passes all values into the constructor of the model class as named arguments.
+This means that anything that db.Model constructor accepts can be specified in the fixture. For example, you can specify parent, key_name or an explicit key:
+
+    class Posts(Fixture, Post):
+      class initial:
+        parent   = Users.bob  # the ancestor of the entity
+        key_name = 'foo'      # explicit key name
+        
+However, since key names are so common in App Engine, there is a better way to provide them.
+If your model defines a static method called key_name_for or key_for,
+it will be automatically called to generate the key name for a new entity. Here's an example:
+
+    import hashlib
+    
+    class Comment(db.Model):
+      blog   = db.ReferenceProperty(Blog)
+      post   = db.ReferenceProperty(Post)
+      author = db.StringProperty()
+      body   = db.TextProperty()
+      
+      @staticmethod
+      def key_name_for(blog_key_name, post_key, author, body):
+        hash = hashlib.sha1(author + body).hexdigest()
+        return 'C-%s-%s-%s' % (blog_key_name, post_key.id_or_name(), hash)
+  
+    class Comments(Fixture, Comment):
+      class hey:
+        blog   = Blogs.jacks_whines
+        post   = Posts.hey
+        author = 'Sawer'
+        body   = 'Hey yourself.'
+        
+A key name for Comments.hey will be automatically generated by calling Comment.key_name_for.
+Arguments will be supplied based on a naming convention.
+Basically, argument names must match the attributes of the fixture,
+possibly with '_key' or '_key_name' appended.
+(Appending '_key' makes sure model instances are turned into keys,
+and appending '_key_name' makes sure model instances or keys are all turned into key names.)
+
+Naturally, a function called 'key_name_for' is expected to return a string,
+and a function called 'key_for' is expected to return db.Key.
 
 
 Adopt to Your Database
@@ -176,7 +233,8 @@ Certainly you can do it for your database engine too. Contributions are very wel
 Running Tests
 -------------
 
-Fun Fixture has a 100% test coverage for the common (non-db-specific) code, and I'd like it to be that way in the future. If you happen to be contributing to funfixtures, you'd need to be able to run tests. Please do:
+If you happen to be contributing to the core, you'd want to be able to run tests.
+Please do:
 
     sudo easy_install -U setuptools
     sudo easy_install nose
@@ -200,7 +258,9 @@ To get nosyd to show nice Growl notifications on a Mac, download Growl SDK from 
 Inspiration
 -----------
 
-This was inspired by the Python fixture library (http://code.google.com/p/fixture/).
+The idea is inpired by the simplicity of Rails fixtures. The implementation is inspired by the Python fixture library (http://code.google.com/p/fixture/).
 
-The author of fixture refused to accept some patches making its APIs more fun to work with, and I hated bloating my test code, and thus funfixtures was born. This is not a fork since the original lib is unnecessarily complicated inside, and I believe I can write a much smaller and straightforward one.
-
+The author of 'fixture' refused to accept some patches making its APIs more fun to work with,
+and I hated bloating my test code, and thus funfix was born.
+This is not a fork since the original lib is unnecessarily complicated inside,
+and I believe I can write a much smaller and straightforward one.

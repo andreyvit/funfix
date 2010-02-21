@@ -4,6 +4,8 @@ __all__ = ('AbstractFixture',)
 from types import ClassType
 import functools
 
+LOG = False
+
 
 def compute_mro(klass):
   if hasattr(klass, '__mro__'): return klass.__mro__
@@ -11,12 +13,15 @@ def compute_mro(klass):
   for b in klass.__bases__: result += compute_mro(b)
   return result
   
+class FixtureError(Exception):
+  pass
   
 class PleaseLoadItem(Exception):
   
-  def __init__(self, item_klass, cause):
+  def __init__(self, item_klass, cause, attr):
     self.item_klass = item_klass
     self.cause = cause
+    self.attr = attr
   
 
 def FixtureItem_getattr(item_klass, attr):
@@ -26,8 +31,24 @@ def FixtureItem_getattr(item_klass, attr):
     try:
       return getattr(item_klass.__class__, attr)
     except AttributeError, e:
-      raise PleaseLoadItem(item_klass, e)
+      raise PleaseLoadItem(item_klass, e, attr)
       
+class DependsOnFutureKey(Exception):
+  def __init__(self, key):
+    self.key = key
+    
+class ItemKlassLoadingProxy(object):
+  def __init__(self, obj, values):
+    self.obj = obj
+    self.values = values
+    self.disallowed_keys = []
+  
+  def __getattr__(self, key):
+    if key in self.disallowed_keys:
+      raise DependsOnFutureKey(key)
+    if key in self.values:
+      return self.values[key]
+    return getattr(self.obj, key)
     
 class FixtureMeta(type):
   
@@ -83,8 +104,8 @@ class FixtureMeta(type):
           if k.startswith('_'): continue
         
           if hasattr(v, '_fixture'):
-            def get_primary_key(kl=v):
-              if kl._load_count == 0: raise PleaseLoadItem(kl, None)
+            def get_primary_key(self, kl=v):
+              if kl._load_count == 0: raise PleaseLoadItem(kl, None, 'key')
               return kl._fixture.get_primary_key(kl, kl._instance)
             v = get_primary_key
           if hasattr(v, '__call__'):
@@ -123,34 +144,68 @@ class FixtureMeta(type):
   # single item loading/unloading
       
   def load_item(fix_klass, item_klass):
+    if LOG: print "load_item(%s.%s)" % (fix_klass.__name__, item_klass.__name__)
     assert item_klass._fixture is fix_klass
     
-    item_klass._load_count += 1
-    if item_klass._load_count == 1:
+    if item_klass._load_count > 1:
+      if not hasattr(item_klass, '_instance'):
+        raise FixtureError, 'Internal error: did not clean up properly after a failed loading attemp of %s.%s' % (fix_klass.__name__, item_klass.__name__)
+      return item_klass._instance
       
-      values = item_klass._values.copy()
-      item_klass._items_to_unload = []
-      loaded_this_time = []
-      for k, v in item_klass._deps.iteritems():
+    values = item_klass._values.copy()
+    item_klass._items_to_unload = []
+    loaded_this_time = []
+    deps_this_time = item_klass._deps
+    
+    # helps detect lambda attributes that depend on other not-yet-calculated lambda attributes
+    proxy = ItemKlassLoadingProxy(item_klass, values)
+    
+    # attributes defined as lambdas may depend on each other, so resolve them iteratively
+    while len(deps_this_time) > 0:
+      deps_next_time = {}
+      proxy.disallowed_keys = deps_this_time.keys()
+      processed_deps = 0
+      for k, v in deps_this_time.iteritems():
+        # retry if external dependency loading has been triggered
         while True:
           try:
             FixtureMeta.loading_counter += 1
             try:
-              values[k] = v()
+              if LOG: print ".. loading %s.%s.%s" % (fix_klass.__name__, item_klass.__name__, k)
+              if v.func_code.co_argcount >= 1:
+                values[k] = v(proxy)
+              else:
+                values[k] = v()
             finally:
               FixtureMeta.loading_counter -= 1
+            processed_deps += 1
+            if LOG: print ".. .. done"
+            break
+          except DependsOnFutureKey, e:
+            deps_next_time[k] = v
+            if LOG: print ".. .. depends on self.%s" % e.key
             break
           except PleaseLoadItem, e:
+            if LOG: print ".. .. depends on %s.%s.%s" % (e.item_klass._fixture.__name__, e.item_klass.__name__, e.attr)
+            if e.item_klass == item_klass:
+              raise StandardError, "Please don't use '%(f)s.%(i)s.%(a)s' to access the current fixture in %(k)s; instead, accept 'self' arguments and use 'self.%(a)s'" % dict(f=fix_klass.__name__, i=item_klass.__name__, k=k, a=e.attr)
             if e.item_klass in loaded_this_time:
               raise e.cause
             else:
               item_klass._items_to_unload.append(e.item_klass)
               e.item_klass._fixture.load_item(e.item_klass)
               loaded_this_time.append(e.item_klass)
-        
-      item_instance = fix_klass.create_item_instance(item_klass, values)
-      item_klass._instance = item_instance
-      setattr(fix_klass, item_klass.__name__, item_instance)
+      if processed_deps == 0:
+        raise StandardError, "Circular dependency between attributes of %s.%s" % (fix_klass.__name__, item_klass.__name__)
+      deps_this_time = deps_next_time
+      
+    item_instance = fix_klass.create_item_instance(item_klass, values)
+    assert item_instance is not None, "create_item_instance(%s.%s) returned None" % (fix_klass.__name__, item_klass.__name__)
+    
+    item_klass._load_count += 1
+    item_klass._instance = item_instance
+    setattr(fix_klass, item_klass.__name__, item_instance)
+    if LOG: print "DONE %s.%s" % (fix_klass.__name__, item_klass.__name__)
     return item_klass._instance
       
   def unload_item(fix_klass, item_klass):
