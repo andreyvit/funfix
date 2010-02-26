@@ -1,6 +1,6 @@
 
 from google.appengine.ext import db
-from funfixtures.common import AbstractFixture, FixtureError
+from funfix.common import AbstractFixture, FixtureError
 
 def compute_key_name_func_arg(arg_name, values, fixture_name, func_name):
   if arg_name in values:

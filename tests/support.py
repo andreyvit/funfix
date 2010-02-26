@@ -1,7 +1,7 @@
 
 __all__ = ('SampleDbFixture', 'with_empty_db')
 
-from funfixtures import AbstractFixture
+from funfix import AbstractFixture
 import sampledb
 import functools
 
