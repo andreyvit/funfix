@@ -22,7 +22,7 @@ Say you have the following models:
 Defining a simple fixture is as simple as:
 
     # myfixtures.py
-    from funfixtures import AppEngineFixture as Fixture
+    from funfix import AppEngineFixture as Fixture
     from mymodels import Post, Comment
   
     class Posts(Fixture, Post):
@@ -209,7 +209,7 @@ Adopt to Your Database
 
 Fun Fixtures currently only supports Google App Engine, but this is easy to fix. Look how easy it was to support the App Engine:
 
-    from funfixtures.common import AbstractFixture
+    from funfix.common import AbstractFixture
 
     class AppEngineFixture(AbstractFixture):
 
